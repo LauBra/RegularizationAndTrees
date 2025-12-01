@@ -154,7 +154,7 @@ tuning_results <- rf_workflow %>%
   )
 
 # Extract the best parameters based on accuracy
-best_params <- select_best(tuning_results, "accuracy")
+best_params <- tune::select_best(tuning_results, metric ="accuracy")
 
 # Finalise the workflow with the best parameters
 final_rf_workflow <- finalize_workflow(rf_workflow, best_params)
