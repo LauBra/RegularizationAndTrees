@@ -1,0 +1,364 @@
+---
+title: "Evaluate Performance in Classification (tidymodels)"
+format:
+  html:
+    toc: true
+  #  code-fold: true
+---
+
+
+
+```{r, message=FALSE}
+# Load required libraries
+library(mlbench)
+library(tidymodels)
+library(tidyverse)
+library(patchwork)
+
+theme_set(theme_bw())
+set.seed(123)
+```
+
+We will work with the `PimaIndiansDiabetes` dataset and:
+
+- split into **training** and **testing** sets,
+- fit a **simple logistic regression** model,
+- obtain **class probabilities** and **predicted classes** using a threshold,
+- evaluate performance on **train** and **test**,
+- visualise **score distributions** and **ROC / AUC**,
+- then **add more features** and compare.
+
+```{r}
+# Load the dataset and keep only variables of interest
+data("PimaIndiansDiabetes")
+
+pima_small <- PimaIndiansDiabetes %>%
+  as_tibble() %>%
+  select(age, glucose, mass, diabetes) %>%
+  mutate(
+    diabetes = factor(diabetes),          # ensure factor, not 0/1
+    diabetes = forcats::fct_relevel(diabetes, "pos", "neg")
+  )
+
+glimpse(pima_small)
+```
+
+Always key to see number of patients of each type
+
+```{r}
+table(PimaIndiansDiabetes$diabetes)
+```
+
+### 1. Train / Test Split
+
+We split the data into 70% training and 30% testing.
+
+```{r}
+data_split <- initial_split(pima_small, prop = 0.7, strata = diabetes)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+dim(pima_small)
+dim(train_data)
+dim(test_data)
+```
+
+### 2. Specify logistic model, recipe and workflow
+
+We start with a very simple model: **diabetes ~ age** (age-only model).
+
+```{r}
+# Model specification: logistic regression
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# Recipe: diabetes ~ age
+log_rec <- recipe(diabetes ~ age, data = train_data)
+
+# Workflow: model + recipe
+log_wf <- workflow() %>%
+  add_model(log_spec) %>%
+  add_recipe(log_rec)
+
+log_wf
+```
+
+### 3. Fit the model on the training data
+
+```{r}
+log_fit <- log_wf %>%
+  fit(data = train_data)
+
+log_fit
+```
+
+If we want to see the underlying glm coefficients:
+
+```{r}
+log_fit %>%
+  extract_fit_parsnip() %>%
+  tidy()
+```
+
+### 4. Predicted probabilities and classes (threshold 0.5)
+
+In classification, the model first outputs **class probabilities**. To turn these into classes we must choose a **decision threshold** (default 0.5).
+
+We’ll:
+
+- get probabilities for the **positive** class `"pos"`,
+- then create a predicted class using a threshold of 0.5.
+
+#### 4.1 Training predictions
+
+```{r}
+# Probabilities on train
+train_preds <- predict(log_fit, train_data, type = "prob") %>%
+  bind_cols(train_data)
+
+head(train_preds)
+```
+
+The `.pred_pos` column is the estimated probability of `"pos"` (diabetes present).
+
+Now create predicted classes:
+
+```{r}
+train_preds <- train_preds %>%
+  mutate(
+    pred_class = if_else(.pred_pos > 0.5, "pos", "neg"),
+    pred_class = factor(pred_class, levels = levels(diabetes))
+  )
+
+head(train_preds)
+```
+
+#### 4.2 Testing predictions
+
+```{r}
+test_preds <- predict(log_fit, test_data, type = "prob") %>%
+  bind_cols(test_data) %>%
+  mutate(
+    pred_class = if_else(.pred_pos > 0.5, "pos", "neg"),
+    pred_class = factor(pred_class, levels = levels(diabetes))
+  )
+
+head(test_preds)
+```
+
+### 5. Evaluate performance with tidymodels metrics
+
+We can use `yardstick` via `metric_set()` to compute several metrics at once.
+
+```{r}
+
+class_metrics <- yardstick::metric_set(
+  yardstick::accuracy,
+  yardstick::precision,
+  yardstick::recall,
+  yardstick::sens,
+  yardstick::specificity
+)
+```
+
+#### 5.1 Training performance
+
+```{r}
+train_metrics <- train_preds %>%
+  class_metrics(truth = diabetes, estimate = pred_class)
+
+train_metrics
+```
+
+#### 5.2 Testing performance
+
+```{r}
+test_metrics <- test_preds %>%
+  class_metrics(truth = diabetes, estimate = pred_class)
+
+test_metrics
+```
+
+We see that:
+
+- Train and test performance are **similar** (no strong sign of overfitting),
+- Overall values are not very high (this **simple model underfits** – age alone is not enough).
+
+### 6. Visualising the score distributions
+
+We can visualise the **predicted probabilities** by true class in train and test.
+
+```{r}
+Train_plot <- ggplot(train_preds, aes(x = diabetes, y = .pred_pos, fill = diabetes)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Train: predicted P(diabetes = pos)") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+Test_plot <- ggplot(test_preds, aes(x = diabetes, y = .pred_pos, fill = diabetes)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Test: predicted P(diabetes = pos)") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+Train_plot + Test_plot
+```
+
+
+### 7. ROC curve and AUC (test set)
+
+We now look at the **ROC curve** and compute the **AUC** for the age-only model on the **test set**.
+
+```{r}
+# ROC curve and AUC for age-only model (test set)
+roc_age <- roc_curve(test_preds, truth = diabetes, .pred_pos)
+auc_age <- roc_auc(test_preds, truth = diabetes, .pred_pos)
+
+auc_age
+```
+
+```{r}
+autoplot(roc_age) +
+  ggtitle("ROC curve – age-only logistic model (test set)")
+```
+
+---
+
+## Include more features
+
+So far we used only **age**. We now include additional predictors to see if performance improves.
+
+```{r}
+pima_big <- PimaIndiansDiabetes %>%
+  mutate(
+    diabetes = factor(diabetes),          # ensure factor, not 0/1
+    diabetes = forcats::fct_relevel(diabetes, "pos", "neg")
+  )
+```
+
+We’ll now work with the **full dataset** and split again.
+
+```{r}
+set.seed(123)
+
+data_split2 <- initial_split(pima_big, prop = 0.7, strata = diabetes)
+train_data2 <- training(data_split2)
+test_data2  <- testing(data_split2)
+
+dim(train_data2)
+dim(test_data2)
+```
+
+### 1. New recipe with more features
+
+We include multiple predictors in our recipe and also add simple preprocessing (e.g. median imputation and normalisation):
+
+```{r}
+# Model specification stays the same
+log_spec2 <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# Recipe with more predictors
+log_rec2 <- recipe(diabetes ~ age + pressure + triceps + mass + insulin,
+                   data = train_data2) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+log_rec2
+```
+
+Create the workflow and fit on training data:
+
+```{r}
+log_wf2 <- workflow() %>%
+  add_model(log_spec2) %>%
+  add_recipe(log_rec2)
+
+log_fit2 <- log_wf2 %>%
+  fit(data = train_data2)
+
+log_fit2
+```
+
+Look at the coefficients:
+
+```{r}
+log_fit2 %>%
+  extract_fit_parsnip() %>%
+  tidy()
+```
+
+### 2. Predictions and performance (train & test)
+
+```{r}
+train_preds2 <- predict(log_fit2, train_data2, type = "prob") %>%
+  bind_cols(train_data2) %>%
+  mutate(
+    pred_class = if_else(.pred_pos > 0.5, "pos", "neg"),
+    pred_class = factor(pred_class, levels = levels(diabetes))
+  )
+
+test_preds2 <- predict(log_fit2, test_data2, type = "prob") %>%
+  bind_cols(test_data2) %>%
+  mutate(
+    pred_class = if_else(.pred_pos > 0.5, "pos", "neg"),
+    pred_class = factor(pred_class, levels = levels(diabetes))
+  )
+```
+
+
+
+#### Train metrics
+
+```{r}
+train_preds2 %>%
+  class_metrics(truth = diabetes, estimate = pred_class)
+```
+
+#### Test metrics
+
+```{r}
+test_preds2 %>%
+  class_metrics(truth = diabetes, estimate = pred_class)
+```
+
+### 3. ROC curve and AUC for the richer model (test set)
+
+```{r}
+roc_rich <- roc_curve(test_preds2, truth = diabetes, .pred_pos)
+auc_rich <- roc_auc(test_preds2, truth = diabetes, .pred_pos)
+
+auc_rich
+```
+
+```{r}
+autoplot(roc_rich) +
+  ggtitle("ROC curve – multi-feature logistic model (test set)")
+```
+
+You should observe:
+
+- A **higher AUC** compared to the age-only model,  
+- A ROC curve that is further from the diagonal.
+
+You will learn more about AUC and AUROC on Friday, but here is a very good visual of its meaning: <https://mlu-explain.github.io/roc-auc/>
+
+
+---
+
+### Key things to understand
+
+- **Dataset splitting** (train vs test) is crucial to assess generalisation.  
+- We **fit the model only on the training data**.  
+- We then evaluate performance on both **train** and **test** to detect:
+  - overfitting (train ≪ test error),
+  - underfitting (both high and similar),
+  - good generalisation (both low and similar).  
+- In classification, we:
+  - work with **probabilities** first,
+  - choose a **threshold** to define predicted classes,
+  - use metrics such as **accuracy, precision, recall, sensitivity, specificity**, etc.,  
+  - and use **ROC curves and AUC** to summarise performance across all thresholds.  
+- Adding more relevant features can improve performance, but we still need to watch for overfitting in more flexible models.

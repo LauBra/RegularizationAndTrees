@@ -2,7 +2,11 @@ project:
   type: website
   output-dir: docs    # <- add / change this line
   render: 
-  - "*.qmd"
+    - 1_EvaluationMetrics_tidymodels.qmd
+    - Classification_Performance_tidymodels_ROC.qmd
+    - DecisionTree_tidymodels_section.qmd
+    - random_forest_tidymodels_exercise.qmd
+   # - random_forest_sklearn_pima_exercise_v2.qmd
 
 execute:
   echo: true
@@ -18,19 +22,20 @@ website:
     search: true
     left:
       - text: "Overfitting, DT and RF"
-        file: 3_Confusion.qmd
+        file: 1_EvaluationMetrics_tidymodels.qmd
  
   sidebar:
     - title: "Overfitting, DT and RF"
       contents:
-        - 3_Confusion.qmd
-        - 1_EvaluationMetrics.qmd
-        - 2_EvaluationMetrics.qmd
-        - 4_Decision_Trees.qmd
-        - 5_RandomForest.qmd
+        #- 3_Confusion.qmd
+        - 1_EvaluationMetrics_tidymodels.qmd
+        - Classification_Performance_tidymodels_ROC.qmd
+        - DecisionTree_tidymodels_section.qmd
+        - random_forest_tidymodels_exercise.qmd
+     #   - random_forest_sklearn_pima_exercise_v2.qmd
   
   page-footer: 
-    left: "Copyright 2024, Laura Bravo" 
+    left: "Copyright 2025, Laura Bravo" 
     background: light
     right: 
       - icon: twitter 
@@ -41,7 +46,7 @@ website:
 format:
   html:
     theme: cosmo
-    css: styles.css
+  #  css: styles.css
     toc: true
    # code-fold: true
     code-tools: true

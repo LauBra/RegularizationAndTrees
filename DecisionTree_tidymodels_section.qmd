@@ -1,0 +1,381 @@
+---
+title: "Decision Trees in Classification (tidymodels)"
+format:
+  html:
+    toc: true
+ #   code-fold: true
+---
+
+
+## Fitting a classification decision tree (tidymodels)
+
+```{r, message=FALSE}
+# Load libraries
+library(tidymodels)
+library(mlbench)
+library(tidyverse)
+library(rpart.plot)   # for plotting the fitted rpart tree
+
+theme_set(theme_bw())
+set.seed(123)
+```
+
+### 1. Data preparation and split
+
+```{r}
+# Load the dataset and inspect
+data("PimaIndiansDiabetes")
+
+pima <- PimaIndiansDiabetes %>%
+  as_tibble() %>%
+  mutate(
+    diabetes = factor(diabetes),
+    diabetes = forcats::fct_relevel(diabetes, "pos", "neg") # make 'pos' the event
+  )
+
+levels(pima$diabetes)
+head(pima)
+```
+
+We split into **training** and **testing** datasets (70/30), stratifying by the outcome:
+
+```{r}
+data_split <- initial_split(pima, prop = 0.7, strata = diabetes)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+dim(pima)
+dim(train_data)
+dim(test_data)
+```
+
+### 2. Basic decision tree (no tuning)
+
+We start with a very simple tree model using **all predictors**.
+
+```{r}
+# Model specification: basic classification tree
+tree_spec_basic <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+# Recipe: use all predictors as-is
+tree_rec <- recipe(diabetes ~ ., data = train_data)
+
+# Workflow: model + recipe
+tree_wf_basic <- workflow() %>%
+  add_model(tree_spec_basic) %>%
+  add_recipe(tree_rec)
+
+tree_wf_basic
+```
+
+Fit the workflow on the **training set**:
+
+```{r}
+tree_fit_basic <- tree_wf_basic %>%
+  fit(data = train_data)
+
+tree_fit_basic
+```
+
+### 3. Visualise the basic tree
+
+We can extract the underlying `rpart` object and use `rpart.plot()`:
+
+```{r}
+tree_fit_basic %>%
+  extract_fit_parsnip() %>%
+  pluck("fit") %>%
+  rpart.plot(extra = 101)
+```
+
+---
+
+### 4. Predictions and performance (basic tree)
+
+We now evaluate performance on **train** and **test** data.
+
+#### 4.1 Training predictions
+
+```{r}
+train_preds_basic <- predict(tree_fit_basic, train_data, type = "prob") %>%
+  bind_cols(predict(tree_fit_basic, train_data, type = "class")) %>%
+  bind_cols(train_data)
+
+head(train_preds_basic)
+```
+
+The `.pred_pos` column contains the estimated probability of `"pos"` (diabetes present), and `.pred_class` is the predicted class using the default threshold 0.5.
+
+#### 4.2 Testing predictions
+
+```{r}
+test_preds_basic <- predict(tree_fit_basic, test_data, type = "prob") %>%
+  bind_cols(predict(tree_fit_basic, test_data, type = "class")) %>%
+  bind_cols(test_data)
+
+head(test_preds_basic)
+```
+
+#### 4.3 Confusion matrices and metrics
+
+We can use `yardstick` metrics (tidymodels) instead of `caret::confusionMatrix`.
+
+```{r}
+class_metrics <- yardstick::metric_set(
+  yardstick::accuracy,
+  yardstick::precision,
+  yardstick::recall,
+  yardstick::sens,
+  yardstick::specificity
+)
+```
+
+Training performance:
+
+```{r}
+train_conf_basic <- conf_mat(train_preds_basic,
+                             truth = diabetes,
+                             estimate = .pred_class)
+train_conf_basic
+```
+
+```{r}
+train_metrics_basic <- train_preds_basic %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+train_metrics_basic
+```
+
+Testing performance:
+
+```{r}
+test_conf_basic <- conf_mat(test_preds_basic,
+                            truth = diabetes,
+                            estimate = .pred_class)
+test_conf_basic
+```
+
+```{r}
+test_metrics_basic <- test_preds_basic %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+test_metrics_basic
+```
+
+As expected, **training accuracy is higher than testing accuracy** → the tree is starting to **overfit** the training data.
+
+---
+
+## Hyperparameters (manual change)
+
+Decision trees have several **stopping criteria** (hyperparameters) that control complexity and help reduce overfitting. In tidymodels these are, for example:
+
+- `tree_depth` – maximum depth of the tree  
+- `min_n` – minimum number of samples in a terminal node  
+- `cost_complexity` – complexity parameter (cp) for pruning  
+
+We can manually set some of these and see the effect.
+
+```{r}
+tree_spec_shallow <- decision_tree(
+  tree_depth = 3,
+  min_n = 20
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_wf_shallow <- workflow() %>%
+  add_model(tree_spec_shallow) %>%
+  add_recipe(tree_rec)
+
+tree_fit_shallow <- tree_wf_shallow %>%
+  fit(data = train_data)
+
+tree_fit_shallow %>%
+  extract_fit_parsnip() %>%
+  pluck("fit") %>%
+  rpart.plot(extra = 101)
+```
+
+### Evaluate the shallow tree
+
+```{r}
+train_preds_shallow <- predict(tree_fit_shallow, train_data, type = "prob") %>%
+  bind_cols(predict(tree_fit_shallow, train_data, type = "class")) %>%
+  bind_cols(train_data)
+
+test_preds_shallow <- predict(tree_fit_shallow, test_data, type = "prob") %>%
+  bind_cols(predict(tree_fit_shallow, test_data, type = "class")) %>%
+  bind_cols(test_data)
+```
+
+```{r}
+train_metrics_shallow <- train_preds_shallow %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+test_metrics_shallow <- test_preds_shallow %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+train_metrics_shallow
+test_metrics_shallow
+```
+
+You should see:
+
+- Training accuracy **drops** (the model is simpler),  
+- Testing accuracy is often **closer to training**, indicating **better generalisation** and less overfitting.
+
+You can manually try other values of `tree_depth` and `min_n` and observe the effect.
+
+---
+
+## Hyperparameter tuning with tidymodels
+
+Instead of trying values one-by-one, we can **systematically search** over a grid of hyperparameters using grid search. 
+For more details: <https://www.tmwr.org/grid-search>
+
+### 1. Create a tunable tree specification
+
+```{r}
+tree_spec_tune <- decision_tree(
+  tree_depth = tune(),
+  min_n      = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_spec_tune
+```
+
+Which parameters to try? There are default parameters that you can check associated to the model libraries <https://dials.tidymodels.org/articles/Basics.html> For example we could create models with these range of values and see which ones works best:
+
+### 3. Define a tuning grid
+
+```{r}
+tree_grid <- grid_regular(
+  tree_depth(range = c(1L, 10L)),
+  min_n(range = c(2L, 30L)),
+  levels = 5
+)
+
+tree_grid
+```
+
+
+```{r}
+tree_wf_cv <- workflow() %>%
+  add_model(tree_spec_tune) %>%
+  add_recipe(tree_rec)
+```
+
+
+### 4. Run `tune_grid()`
+
+For each combination in the grid, tidymodels fits a model and calculates accuracy and ROC AUC (metrics of choice for classification). We will see on Friday (and you saw yesterday) that the proper way of doing this is through cross-validation. Why is this needed? Because a single train/test split can give a lucky (or unlucky) result. Cross-validation gives a stable estimate of performance for each hyperparameter setting. But lets go one step at a time. 
+
+```{r}
+set.seed(123)
+
+
+tree_res <- tune_grid(
+  tree_wf_cv,
+  resamples = bootstraps(train_data, times = 1), #normally would have your crossvalidation info here - something like this (pima_folds <- vfold_cv(train_data, v = 5)) - but will learn about this later on.
+  grid      = tree_grid,
+  metrics   = yardstick::metric_set(yardstick::roc_auc, yardstick::accuracy)
+)
+
+tree_res
+```
+
+Inspect the best results (e.g. by ROC AUC):
+
+```{r}
+show_best(tree_res, metric = "roc_auc", n = 5)
+```
+
+```{r}
+tree_metrics <- collect_metrics(tree_res) %>%
+  filter(.metric == "roc_auc")
+
+tree_metrics
+
+```
+
+
+```{r}
+autoplot(tree_res)
+```
+
+
+
+Select the best hyperparameters and finalise the workflow:
+
+```{r}
+best_tree <- select_best(tree_res, metric = "roc_auc")
+best_tree
+```
+
+```{r}
+final_tree_wf <- finalize_workflow(tree_wf_cv, best_tree)
+
+final_tree_fit <- final_tree_wf %>%
+  fit(data = train_data)
+
+final_tree_fit
+```
+
+### 5. Evaluate the tuned tree on the test set
+
+```{r}
+train_preds_final <- predict(final_tree_fit, train_data, type = "prob") %>%
+  bind_cols(predict(final_tree_fit, train_data, type = "class")) %>%
+  bind_cols(train_data)
+
+test_preds_final <- predict(final_tree_fit, test_data, type = "prob") %>%
+  bind_cols(predict(final_tree_fit, test_data, type = "class")) %>%
+  bind_cols(test_data)
+```
+
+```{r}
+train_metrics_final <- train_preds_final %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+test_metrics_final <- test_preds_final %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+train_metrics_final
+test_metrics_final
+```
+
+We can also compare ROC AUC:
+
+```{r}
+roc_auc(train_preds_final, truth = diabetes, .pred_pos)
+roc_auc(test_preds_final,  truth = diabetes, .pred_pos)
+```
+
+And visualise the final tree:
+
+```{r}
+final_tree_fit %>%
+  extract_fit_parsnip() %>%
+  pluck("fit") %>%
+  rpart.plot(extra = 101)
+```
+
+---
+
+### Key messages
+
+- A **basic tree** can easily overfit: high training accuracy, lower test accuracy.  
+- **Hyperparameters** like `tree_depth` and `min_n` control complexity and help reduce overfitting.  
+- **tidymodels** lets us:
+  - define tunable specifications (`tune()`),
+  - keep preprocessing and modelling together in **workflows**,
+  - and only evaluate on the **test set once** at the very end.  
+
+Remember:  
+> Hyperparameter tuning is part of the training process.  
+> The **test set must never be used** to choose hyperparameters – only to evaluate the final chosen model.

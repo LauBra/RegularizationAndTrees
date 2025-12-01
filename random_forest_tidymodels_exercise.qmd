@@ -1,0 +1,293 @@
+---
+title: "Random Forest Classification (tidymodels)"
+format:
+  html:
+    toc: true
+  #  code-fold: true
+---
+
+## Goal
+
+In this exercise you will:
+
+- Fit a **random forest** classifier to the Pima Indians Diabetes data.
+- Tune key **hyperparameters** using the **tidymodels** framework.
+- Compare **training vs test** performance.
+- Reflect on the benefits of using **pipelines/workflows**.
+
+---
+
+## 1. Setup
+
+```{r, message=FALSE}
+library(tidymodels)
+library(mlbench)
+library(tidyverse)
+
+theme_set(theme_bw())
+set.seed(123)
+```
+
+---
+
+## 2. Data preparation and split
+
+We will use the **PimaIndiansDiabetes** dataset, with outcome `diabetes` (`pos` = diabetes, `neg` = no diabetes).
+
+```{r}
+data("PimaIndiansDiabetes")
+
+pima <- PimaIndiansDiabetes %>%
+  as_tibble() %>%
+  mutate(
+    diabetes = factor(diabetes, levels = c("pos", "neg"))
+  )
+
+levels(pima$diabetes)
+head(pima)
+```
+
+Split into **training** (70%) and **test** (30%) sets, stratifying by the outcome so that the class balance is similar in both sets:
+
+```{r}
+data_split <- initial_split(pima, prop = 0.7, strata = diabetes)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+dim(pima)
+dim(train_data)
+dim(test_data)
+```
+
+---
+
+## 3. Random forest model with tunable hyperparameters
+
+We set up a **random forest** model where some hyperparameters are marked with `tune()`:
+
+- `mtry`  → number of predictors randomly sampled at each split  
+- `min_n` → minimum number of observations in a terminal node  
+- `trees` → number of trees in the forest (we keep this fixed at 500)
+
+To check what they mean remember to go to help pages: ,To check name of hyperparamters (remember model dependent!) can go here <https://parsnip.tidymodels.org/reference/details_rand_forest_ranger.html>
+
+
+```{r}
+rf_spec <- rand_forest(
+  mtry  = tune(),
+  min_n = tune(),
+  trees = 500
+) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+rf_spec
+```
+
+We also define a **recipe** that uses all predictors:
+
+```{r}
+rf_rec <- recipe(diabetes ~ ., data = train_data)
+```
+
+Now combine model + recipe into a **workflow**:
+
+```{r}
+rf_wf <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(rf_rec)
+
+rf_wf
+```
+
+---
+
+## 4. Hyperparameter grid and resamples
+
+We want to search over a grid of values for `mtry` and `min_n`:
+
+```{r}
+rf_grid <- grid_regular(
+  mtry(range = c(2L, 7L)),
+  min_n(range = c(2L, 10L)),
+  levels = 5
+)
+
+rf_grid
+```
+
+
+## 5. Tune the random forest with `tune_grid()`
+
+Now we run the tuning. For each row in `rf_grid`, tidymodels:
+
+- fits the model,
+- computes performance metrics,
+- stores the mean performance for that combination.
+
+```{r}
+set.seed(123)
+
+rf_res <- tune_grid(
+  rf_wf,
+  resamples = bootstraps(train_data, times = 1), #normally cross-validation here - but will learn about this later on.
+  grid      = rf_grid,
+  metrics   = yardstick::metric_set(yardstick::accuracy, yardstick::roc_auc)
+)
+
+rf_res
+```
+
+
+### 5.1 Inspect and visualise the tuning results
+
+Collect tuning results:
+
+```{r}
+rf_metrics <- collect_metrics(rf_res)
+rf_metrics
+```
+
+```{r}
+autoplot(rf_res)
+```
+
+
+Filter by ROC AUC:
+
+```{r}
+rf_metrics_auc <- rf_metrics %>%
+  filter(.metric == "roc_auc")
+
+rf_metrics_auc
+```
+
+Plot performance across hyperparameters:
+
+```{r}
+autoplot(rf_res, metric = "roc_auc")
+```
+
+> **Exercise:**  
+> - Which combinations of `mtry` and `min_n` seem to work best?  
+> - Do deeper / more flexible forests always perform better?
+
+---
+
+## 6. Final model with the best hyperparameters
+
+Select the best hyperparameter combination according to ROC AUC:
+
+```{r}
+best_rf <- select_best(rf_res, metric = "roc_auc")
+best_rf
+```
+
+Finalise the workflow and fit **one final model** on the full training data:
+
+```{r}
+final_rf_wf <- finalize_workflow(rf_wf, best_rf)
+
+final_rf_fit <- final_rf_wf %>%
+  fit(data = train_data)
+
+final_rf_fit
+```
+
+---
+
+## 7. Evaluate the final random forest
+
+We now compare **training** and **test** performance.
+
+```{r}
+# Training predictions
+train_preds <- predict(final_rf_fit, train_data, type = "prob") %>%
+  bind_cols(predict(final_rf_fit, train_data, type = "class")) %>%
+  bind_cols(train_data)
+
+# Test predictions
+test_preds <- predict(final_rf_fit, test_data, type = "prob") %>%
+  bind_cols(predict(final_rf_fit, test_data, type = "class")) %>%
+  bind_cols(test_data)
+```
+
+Define a metric set:
+
+```{r}
+class_metrics <- yardstick::metric_set(
+  yardstick::accuracy,
+  yardstick::precision,
+  yardstick::recall,
+  yardstick::sens,
+  yardstick::specificity
+)
+```
+
+Compute metrics:
+
+```{r}
+train_metrics <- train_preds %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+test_metrics <- test_preds %>%
+  class_metrics(truth = diabetes, estimate = .pred_class)
+
+train_metrics
+test_metrics
+```
+
+Also compare ROC AUC:
+
+```{r}
+roc_auc(train_preds, truth = diabetes, .pred_pos)
+roc_auc(test_preds,  truth = diabetes, .pred_pos)
+```
+
+> **Exercise:**  
+> - Is there still a big gap between training and test performance?  
+> - Compared to a basic (untuned) random forest, has the gap reduced?  
+
+### **Extra:**  
+
+Now replicate this in Python, be sure to include these key functions: 
+
+- rf_basic = RandomForestClassifier(
+    random_state=123
+)
+
+- rf_basic.fit(X_train, y_train)
+- accuracy_score
+- roc_auc_score
+- pipe = Pipeline(
+    steps=[
+        ("rf", RandomForestClassifier(random_state=123))
+    ]
+)
+- param_grid = {
+    "rf__n_estimators": [200],    # keep fixed
+    "rf__max_depth": [None, 5]#,   # shallow vs full depth
+    "rf__min_samples_leaf": [1, 5]  # normal vs slightly regularised
+}
+- grid = GridSearchCV(
+    estimator=pipe,
+    param_grid=param_grid,
+    cv=5,# before had just a single split of data here we are adding the 5 different splits!
+    scoring="roc_auc",
+    n_jobs=-1,
+    refit=True,
+)
+
+- grid.fit(X_train, y_train)
+- confusion_matrix
+- classification_report
+
+## 8. Reflection – why pipelines?
+
+> **Questions to think about:**
+>
+> 1. What benefits do you think **workflows/pipelines** have compared to writing everything by hand (e.g. separate model, formula, and prediction code)?
+> 2. How does using a workflow help when:
+>    - you change the model (e.g. tree → random forest → logistic regression)?  
+>    - you add preprocessing steps (e.g. scaling, imputation, dummy variables)?
+

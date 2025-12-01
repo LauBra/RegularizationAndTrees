@@ -178,4 +178,4 @@ final_conf_matrix <- confusionMatrix(final_pred, test_data$diabetes)
 print(final_conf_matrix)
 
 ```
-Hyperparameter tuning is guided by performance metrics in the training set alone! Remember, the test set can never be part of the fitting process and hyperparameter tuning is.A different thing is that, once the predictive model has been defined, we  then go and evaluate the performance in both datasets (with the test set results describing generalizability - what we are really after!)
+Hyperparameter tuning is guided by performance metrics in the training set alone! Remember, the test set can never be part of the fitting process

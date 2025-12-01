@@ -1,0 +1,165 @@
+---
+title: "Evaluate Performance in Regression (tidymodels)"
+format:
+  html:
+    toc: true
+ #   code-fold: true
+---
+
+```{r, message=FALSE}
+# Load required libraries
+library(mlbench)
+library(tidymodels)
+library(tidyverse)
+
+theme_set(theme_bw())
+set.seed(123)
+```
+
+We will work with the `PimaIndiansDiabetes` dataset and:
+
+-   split into **training** and **testing** sets,
+-   fit a **simple logistic regression** model,
+-   obtain **predicted glucose**,
+-   evaluate performance on **train** and **test**
+
+```{r}
+# Load the dataset and view
+data("PimaIndiansDiabetes")
+head(PimaIndiansDiabetes)
+
+#Lets keep only the variables we are interested in 
+
+PimaIndiansDiabetes_Small <- PimaIndiansDiabetes %>%
+  select(age, glucose, diabetes, mass)
+```
+
+```{r}
+# Split into training and testing datasets
+set.seed(123)
+
+data_split <- initial_split(PimaIndiansDiabetes_Small, prop = 0.7)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+Check dimensions of both! Want to split original dataset in a 70%, 30%
+
+```{r}
+dim(PimaIndiansDiabetes_Small)
+dim(train_data)
+dim(test_data)
+```
+
+Now imagine we believe that the relationship between glucose and age is cubic. We can fit a polynomial like in class:
+
+```{r}
+cubic_spec <- linear_reg() %>%
+set_engine("lm")
+
+cubic_rec <- recipe(glucose ~ age, data = train_data) %>%
+step_poly(age, degree = 3)
+```
+
+Have you seen? As this is feature transformation, we have included it as part of the recepies! As if it were part of the pre-processing. Check out how the data changes by viewing the pre-processing transformation
+
+```{r}
+
+bake(cubic_rec %>% 
+       prep(), new_data = NULL)
+```
+
+```{r}
+cubic_wf <- workflow() %>%
+add_model(cubic_spec) %>%
+add_recipe(cubic_rec)
+```
+
+```{r}
+model_cubic <- cubic_wf %>%
+fit(data = train_data)
+
+model_cubic
+```
+
+Now, we want to understand if the model will be able to generalize to unseen data. In other words, we want to understand if we are overfitting or underfitting our data. To study this, we are going to evaluate the performance of our model in both our training (where the model is fit, and best fit parameters determined) and our testing data (not part of the fitting data at all!)
+
+As this is a regression model, we can calculate our well-known metrics RMSE, MSE, SSR .. that measure the error between predicted y (glucose) and actual glucose value. We can do this by calculating the metrics ourselves, or using the many already determined functions.
+
+But first, lets make our predictions:
+
+```{r}
+training_glucose_prediction <-  as.numeric(predict(model_cubic, train_data)$.pred)
+
+head(training_glucose_prediction) 
+```
+
+To make it easier for us, lets include this predicted glucose in our training data as an extra column
+
+```{r}
+train_data <- cbind(train_data, pred_glucose =training_glucose_prediction )
+
+head(train_data)
+```
+
+Tip! You can do this automatically using the function `augment`
+
+```{r}
+train_data <-  augment(model_cubic, train_data)
+```
+
+Now lets do the same for the testing data
+
+```{r}
+
+test_data <- augment(model_cubic, test_data)
+
+head(test_data)
+```
+
+Onto evaluating our performance:
+
+```{r}
+# Function to calculate RMSE
+rmse_mine <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+```
+
+Train:
+
+```{r}
+rmse_mine(train_data$glucose, train_data$.pred )
+```
+
+Test:
+
+```{r}
+rmse_mine(test_data$glucose, test_data$.pred )
+```
+
+Can use already predefined functions (e.g Metrics package <https://cran.r-project.org/web/packages/Metrics/Metrics.pdf>)
+
+```{r}
+library(Metrics)
+```
+
+```{r}
+# Calculate individual metrics: train
+Metrics::rmse(train_data$glucose, train_data$.pred ) # the dots mean that I want this function rmse, to come from this package! In case other functions are named the same way
+Metrics::mae(train_data$glucose, train_data$.pred )
+
+```
+
+```{r}
+# Calculate individual metrics: test
+Metrics::rmse(test_data$glucose, test_data$.pred)
+Metrics::mae(test_data$glucose, test_data$.pred )
+
+```
+
+They both fit the data in quite a similar way ! Overfitting, not happening as similar performance in both train and test, but probably this is not the best model, underfitting as missing lots of insight and error is high. What can be the reason behind this? My go to, is that we should increase number of features, as trying to predict glucose with age is too simple and cannot capture the complexity of glucose behaviour.
+
+------------------------------------------------------------------------
+
+Key things to understand: - Dataset splitting - Fitting model in training - Evaluating performance of fitted model in both train and test to understand possible overfitting, underfitting issues - Extract insight from modeling and decide next steps

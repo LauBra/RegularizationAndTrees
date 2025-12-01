@@ -1,0 +1,320 @@
+---
+title: "Random Forest Classification with scikit-learn on Pima Indians (Pipeline & Tuning)"
+format:
+  html:
+    toc: true
+  #  code-fold: true
+---
+
+## Goal
+
+In this exercise you will:
+
+- Fit a **random forest** classifier to the **Pima Indians Diabetes** data using **scikit-learn**.
+- Wrap preprocessing + model inside a **Pipeline**.
+- Tune key **hyperparameters** with `GridSearchCV`.
+- Compare **training vs test** performance.
+- Reflect on the benefits of using **pipelines**, in parallel with **tidymodels workflows** in R.
+
+This uses the same conceptual setup as your R/tidymodels exercise, but fully in Python.
+
+---
+
+
+```{r, include=FALSE}
+library(reticulate)
+
+# one-off setup (if you haven't done it yet)
+# install_miniconda()
+
+##conda_create(
+##  envname = "hds-python",
+##  python_version = "3.11",
+##  packages = c("numpy", "pandas", "matplotlib", "seaborn", "scikit-learn")
+##)
+
+use_condaenv("hds-python", required = TRUE)
+#py_config()
+
+#conda_install("hds-python", c("jupyter", "plotly"))
+```
+
+
+
+
+## 1. Data: Pima Indians Diabetes
+
+We will load a Pima Indians Diabetes dataset from a GitHub URL and keep a subset of variables to make things simple.
+
+```{python}
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    roc_auc_score,
+    classification_report,
+    confusion_matrix
+)
+
+np.random.seed(123)
+
+url = "https://raw.githubusercontent.com/npradaschnor/Pima-Indians-Diabetes-Dataset/master/diabetes.csv"
+pima = pd.read_csv(url)
+
+# Keep a smaller set of predictors
+pima = pima[["Glucose", "Outcome", "BloodPressure", "Age"]]
+
+# Binary outcome: 1 = diabetes, 0 = no diabetes
+pima["Diabetes_binary"] = (pima["Outcome"] == 1).astype(int)
+
+pima.head()
+```
+
+Check structure:
+
+```{python}
+pima.info()
+```
+
+Separate features `X` and outcome `y`:
+
+```{python}
+X = pima[["Glucose", "BloodPressure", "Age"]]
+y = pima["Diabetes_binary"]
+
+X.head(), y.head()
+```
+
+---
+
+## 2. Train / test split
+
+We split the data into:
+
+- **Training set** (70%)
+- **Test set** (30%)
+
+We also **stratify** by `y` so that the class balance is similar in train and test.
+
+```{python}
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.3,
+    random_state=123,
+    stratify=y
+)
+
+X_train.shape, X_test.shape
+```
+
+Check class balance in train and test:
+
+```{python}
+pd.Series(y_train).value_counts(normalize=True), pd.Series(y_test).value_counts(normalize=True)
+```
+
+---
+
+## 3. Baseline random forest (no pipeline, minimal tuning)
+
+We start with a very basic `RandomForestClassifier` using default hyperparameters (except for a fixed `random_state`).
+
+```{python}
+rf_basic = RandomForestClassifier(
+    random_state=123
+)
+
+rf_basic.fit(X_train, y_train)
+```
+
+### 3.1 Performance on training data
+
+```{python}
+y_pred_train_basic = rf_basic.predict(X_train)
+y_proba_train_basic = rf_basic.predict_proba(X_train)[:, 1]
+
+train_acc_basic = accuracy_score(y_train, y_pred_train_basic)
+train_roc_basic = roc_auc_score(y_train, y_proba_train_basic)
+
+train_acc_basic, train_roc_basic
+```
+
+### 3.2 Performance on test data
+
+```{python}
+y_pred_test_basic = rf_basic.predict(X_test)
+y_proba_test_basic = rf_basic.predict_proba(X_test)[:, 1]
+
+test_acc_basic = accuracy_score(y_test, y_pred_test_basic)
+test_roc_basic = roc_auc_score(y_test, y_proba_test_basic)
+
+test_acc_basic, test_roc_basic
+```
+
+> **Questions:**  
+> - Do you see a clear gap between training and test performance?  
+> - Does the model look like it might be overfitting (doing *too well* on training)?
+
+---
+
+## 4. Why pipelines?
+
+In realistic workflows we often need to:
+
+- **Preprocess** features (e.g. scaling, imputation, one-hot encoding).
+- **Fit a model** (e.g. random forest, logistic regression).
+- **Tune hyperparameters** with cross-validation.
+
+If we did all of this manually, we would have to:
+
+- Remember to apply the **same preprocessing** to training, validation and test.
+- Avoid **data leakage** (never use information from the test set during training/tuning).
+
+A **Pipeline** in scikit-learn:
+
+- Chains together steps: e.g. `("scaler", StandardScaler())`, then `("rf", RandomForestClassifier())`.
+- Ensures that, inside cross-validation, **all steps** are re-fitted only on the training fold.
+- Makes the code cleaner, more reproducible, and less error-prone.
+
+---
+
+## 5. Random forest inside a Pipeline + hyperparameter tuning
+
+We now build a pipeline:
+
+- Step 1: `StandardScaler` (optional for trees, but useful when comparing to other models).
+- Step 2: `RandomForestClassifier`.
+
+```{python}
+pipe = Pipeline(
+    steps=[
+        ("scaler", StandardScaler()),
+        ("rf", RandomForestClassifier(random_state=123))
+    ]
+)
+
+pipe
+```
+
+### 5.1 Hyperparameters to tune
+
+We will tune:
+
+- `rf__n_estimators` → number of trees  
+- `rf__max_depth`   → maximum depth of each tree (controls complexity)  
+- `rf__min_samples_leaf` → minimum number of samples in a leaf node  
+
+The `rf__` prefix refers to the **step name** `"rf"` in the pipeline.
+
+```{python}
+param_grid = {
+    "rf__n_estimators": [200],    # keep fixed
+    "rf__max_depth": [None, 5]#,   # shallow vs full depth
+    #"rf__min_samples_leaf": [1, 5]  # normal vs slightly regularised
+}
+
+param_grid
+```
+
+### 5.2 Grid search with cross-validation
+
+We use `GridSearchCV` to:
+
+- Try all combinations in `param_grid`.
+- Evaluate each combination with **5-fold cross-validation** on the **training data**. (this is new! We will go inot more details, but basically can take it as 5 separate splits of the training data. So the models will fit to 5 different datasets. )
+- Use **ROC AUC** as the scoring metric.
+- Refit the pipeline on the **full training set** using the best hyperparameters.
+
+```{python}
+grid = GridSearchCV(
+    estimator=pipe,
+    param_grid=param_grid,
+    cv=5,# before had just a single split of data here we are adding the 5 different splits!
+    scoring="roc_auc",
+    n_jobs=-1,
+    refit=True,
+)
+
+grid
+```
+
+Run the grid search:
+
+```{python}
+grid.fit(X_train, y_train)
+```
+
+Inspect the best hyperparameters and CV score:
+
+```{python}
+best_params = grid.best_params_
+best_cv_score = grid.best_score_
+
+best_params, best_cv_score
+```
+
+---
+
+## 6. Evaluate the tuned pipeline
+
+### 6.1 Test set performance
+
+```{python}
+y_pred_test = grid.predict(X_test)
+y_proba_test = grid.predict_proba(X_test)[:, 1]
+
+test_acc = accuracy_score(y_test, y_pred_test)
+test_roc = roc_auc_score(y_test, y_proba_test)
+
+print("Test accuracy:", test_acc)
+print("Test ROC AUC:", test_roc)
+print("\nConfusion matrix (test):")
+print(confusion_matrix(y_test, y_pred_test))
+print("\nClassification report (test):")
+print(classification_report(y_test, y_pred_test))
+```
+
+### 6.2 Training set performance
+
+```{python}
+y_pred_train = grid.predict(X_train)
+y_proba_train = grid.predict_proba(X_train)[:, 1]
+
+train_acc = accuracy_score(y_train, y_pred_train)
+train_roc = roc_auc_score(y_train, y_proba_train)
+
+print("Train accuracy:", train_acc)
+print("Train ROC AUC:", train_roc)
+```
+
+> **Questions:**
+>
+> - Compare the tuned model’s train vs test performance.  
+>   - Is the gap smaller or larger than for the basic (untuned) model?  
+> - Does the model still look heavily overfitted, or does it generalise well?
+
+---
+
+## 7. Summary and reflection
+
+**Key ideas:**
+
+- A **random forest** is an ensemble of decision trees built on bootstrapped samples and random subsets of features.
+- It has **hyperparameters** (number of trees, max depth, min samples per leaf, etc.) that strongly affect performance and overfitting.
+- **Pipelines** keep preprocessing and modelling together and help avoid data leakage.
+- `GridSearchCV`:
+  - Tries different hyperparameter combinations.
+  - Uses cross-validation on the training data only.
+  - Selects the best combination and refits on the full training set.
+
+> **Reflection prompts (linking to tidymodels):**
+>
+> 1. How is `Pipeline` + `GridSearchCV` similar in spirit to **tidymodels workflows + tune_grid()**?  
+> 2. Why is it important that **hyperparameter tuning** never uses the test set?  
+> 4. How could you extend this example to compare random forests with another model (e.g. logistic regression) using the *same* pre-processing pipeline?
