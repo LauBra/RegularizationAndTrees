@@ -1,0 +1,181 @@
+
+## Fitting a classification decision tree
+
+
+```{r, message=FALSE}
+# Load libraries
+library(rpart)
+library(rpart.plot)
+library(tidymodels)
+library(mlbench)
+library(tidyverse)
+library(caret) # for confusionMatrix function!
+
+```
+
+
+```{r}
+# Load the dataset and view
+data("PimaIndiansDiabetes")
+head(PimaIndiansDiabetes)
+
+
+PimaIndiansDiabetes$diabetes <- factor(PimaIndiansDiabetes$diabetes, levels = c("pos", "neg"))  # Convert Outcome to a factor
+
+```
+
+```{r}
+
+# Split into training and testing datasets
+set.seed(123)
+
+data_split <- initial_split(PimaIndiansDiabetes, prop = 0.7, strata = diabetes)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+Now, lets train a basic decision tree, remember,  no issue with preprocessing, can just include all other variables! Recall what all of these varaiables mean: <https://search.r-project.org/CRAN/refmans/mlbench/html/PimaIndiansDiabetes.html>
+
+```{r}
+
+
+basic_tree <- rpart(diabetes ~ ., data = train_data, method = "class")
+basic_tree
+```
+
+
+```{r}
+rpart.plot(basic_tree, extra = 101)  # Plot the tree
+```
+
+When predicting, what will we be obtaining? Predictions? Classes? As with the previous we can specify this: 
+
+```{r}
+# Evaluate the basic model
+pred <- predict(basic_tree, train_data, type = "prob")
+head(pred)
+```
+
+But lets stick with class (default threshold 0.5)
+
+```{r}
+# Evaluate the basic model
+pred <- predict(basic_tree, train_data, type = "class")
+head(pred)
+```
+
+
+```{r}
+conf_matrix <- confusionMatrix(pred, train_data$diabetes)
+print(conf_matrix)
+```
+
+Now same thing with test 
+
+```{r}
+# Evaluate the basic model
+pred <- predict(basic_tree, test_data, type = "class")
+
+conf_matrix <- confusionMatrix(pred, test_data$diabetes)
+print(conf_matrix)
+```
+
+As expected, training is much higher than test! Overfitting happening. Can we do something about it by tuning hyperparameters? 
+
+## Hyperparameters
+
+We explained that in order to prevent overfitting, decision trees have stopping criteria in the form of hyperparameters. Explore different hyperparamter combinations and see the impact it has on the predictive model created.
+
+First chek out the hyperparameters available. All information is available from the function help <https://cran.r-project.org/web/packages/rpart/rpart.pdf> and go to rpart and rpart.control  
+
+```{r}
+# Manually tune hyperparameters (example with maxdepth)
+tuned_tree_depth <- rpart(diabetes ~ ., data = train_data, method = "class",
+                          control = rpart.control(maxdepth = 3))
+
+rpart.plot(tuned_tree_depth)  # Plot the tuned tree
+```
+Very different!! What has happened? Lets evaluate the manually tuned model
+
+```{r}
+pred_depth_train <- predict(tuned_tree_depth, train_data, type = "class")
+conf_matrix_depth <- confusionMatrix(pred_depth_train, train_data$diabetes)
+print(conf_matrix_depth)
+```
+
+```{r}
+pred_depth_test <- predict(tuned_tree_depth, test_data, type = "class")
+conf_matrix_depth <- confusionMatrix(pred_depth_test, test_data$diabetes)
+print(conf_matrix_depth)
+```
+Accuracy has reduced BUT now the model is generalizable, it does not capture noise anymore, but the inherent relationship in the data, that is present in the test set too.
+
+Attempt tuning another hyperparameter of your choice and see what happens. You can modify more than one  at the same time!
+
+```{r}
+
+```
+
+## Hyperparameter tuning
+
+Hyperparameter tuning is part of our training process, as will determine the final predictive model. Going one by one to see which hyperparameter improves our training performance is tedious so, we can do a grid-search where we specify combinations of values we want our hyperparameters to explore: 
+
+```{r}
+# Grid search for hyperparameter tuning 
+grid <- expand.grid(maxdepth = 3:5,                   # Maximum depth
+                    minsplit = c(10, 20))          # Minimum splits
+```
+
+View what this looks like!
+
+
+
+```{r}
+results <- data.frame()  # To store results
+
+for (i in 1:nrow(grid)) {
+  
+  tree_model <- rpart(diabetes ~ ., data = train_data, method = "class",
+                      control = rpart.control(maxdepth = grid$maxdepth[i],
+                                              minsplit = grid$minsplit[i]))
+  pred <- predict(tree_model, train_data, type = "class")
+  accuracy <- sum(pred == train_data$diabetes) / nrow(train_data)
+  results <- rbind(results, cbind(grid[i, ], Accuracy = accuracy))
+}
+
+# Display sorted results
+results <- results[order(-results$Accuracy), ]
+print(results)
+```
+
+Now lets train the final model with the best hyperparameters
+
+```{r}
+# Train the final model with the best hyperparameters
+best_params <- results[1, ]
+final_tree <- rpart(diabetes ~ ., data = train_data, method = "class",
+                    control = rpart.control(maxdepth = best_params$maxdepth,
+                                            minsplit = best_params$minsplit))
+```
+
+
+```{r}
+rpart.plot(final_tree)
+```
+
+
+```{r}
+final_pred <- predict(final_tree, train_data, type = "class")
+final_conf_matrix <- confusionMatrix(final_pred, train_data$diabetes)
+print(final_conf_matrix)# Plot the final model
+```
+
+
+```{r}
+# Evaluate the final model
+final_pred <- predict(final_tree, test_data, type = "class")
+final_conf_matrix <- confusionMatrix(final_pred, test_data$diabetes)
+print(final_conf_matrix)
+
+```
+Hyperparameter tuning is guided by performance metrics in the training set alone! Remember, the test set can never be part of the fitting process and hyperparameter tuning is.A different thing is that, once the predictive model has been defined, we  then go and evaluate the performance in both datasets (with the test set results describing generalizability - what we are really after!)

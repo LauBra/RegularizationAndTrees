@@ -1,0 +1,51 @@
+project:
+  type: website
+  output-dir: docs    # <- add / change this line
+  render: 
+  - "*.qmd"
+
+execute:
+  echo: true
+  python:
+    version: "r-reticulate"
+    
+website:
+  back-to-top-navigation: true
+  page-navigation: true
+  title: "HDS MSc - Module 3 - Overfitting, DT & RF"
+  navbar:
+    background: primary
+    search: true
+    left:
+      - text: "Overfitting, DT and RF"
+        file: 3_Confusion.qmd
+ 
+  sidebar:
+    - title: "Overfitting, DT and RF"
+      contents:
+        - 3_Confusion.qmd
+        - 1_EvaluationMetrics.qmd
+        - 2_EvaluationMetrics.qmd
+        - 4_Decision_Trees.qmd
+        - 5_RandomForest.qmd
+  
+  page-footer: 
+    left: "Copyright 2024, Laura Bravo" 
+    background: light
+    right: 
+      - icon: twitter 
+        href: https://twitter.com/laura_bravo94
+      - icon: github
+        href: https://github.com/LauBra/RIntro2023
+    
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+   # code-fold: true
+    code-tools: true
+    code-link: true
+
+editor: visual
+

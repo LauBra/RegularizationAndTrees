@@ -1,0 +1,215 @@
+### Evaluate performance in classification
+
+```{r, message=FALSE}
+# Load required libraries
+library(mlbench)
+library(tidymodels)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r}
+# Load the dataset and view
+data("PimaIndiansDiabetes")
+head(PimaIndiansDiabetes)
+
+#Lets keep only the variables we are interested in 
+
+PimaIndiansDiabetes_Small <- PimaIndiansDiabetes %>%
+  select(age, glucose, diabetes, mass)
+
+
+
+```
+
+```{r}
+# Split into training and testing datasets
+set.seed(123)
+
+data_split <- initial_split(PimaIndiansDiabetes_Small, prop = 0.7)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+Check dimensions of both! Want to split original dataset in a 70%, 30%
+
+```{r}
+dim(PimaIndiansDiabetes_Small)
+dim(train_data)
+dim(test_data)
+```
+
+Now imagine we believe that the relationship between glucose and age is cubic. We can fit a polynomial like in class:
+
+```{r}
+model_class <- glm(diabetes ~ age, family = "binomial", data = PimaIndiansDiabetes_Small)
+summary(model_class)
+```
+
+Now, we want to understand if the model will be able to generalize to unseen data. In other words, we want to understand if we are overfitting or underfitting our data. To study this, we are going to evaluate the performance of our model in both our training (where the model is fit, and best fit parameters determined) and our testing data (not part of the fitting data at all!)
+
+As this is a classification model, we have to first decide our threshold and then compare our predicted classes and real classes through metrics such as: accuracy, sensitivity, specificty, precision, recall and AUC. We can do this by calculating the metrics ourselves, or using the many already determined functions.
+
+But first, lets make our predictions:
+
+```{r}
+training_diabetes_prediction <-  as.numeric(predict(model_class, train_data, type = "response"))
+
+head(training_diabetes_prediction) 
+```
+
+To make it easier for us, lets include this predicted glucose in our training data as an extra column
+
+```{r}
+train_data <- cbind(train_data, pred_diab =training_diabetes_prediction )
+
+head(train_data)
+```
+
+What happens when I do not type the `type = response`? What do I get it instead? Not probabilities, as go above 1 and are negative too. What we get is the logit!!!
+
+Also, now we need the predicted classes, so have to pick a threshold, we will go for the default 0.5 for now.
+
+```{r}
+
+train_data <- train_data %>% 
+  mutate(pred_class = ifelse(pred_diab > 0.5, "pos", "neg")) #want to compare it to actual column so writing it in same way
+
+head(train_data)
+```
+
+Now lets do the same for the testing data
+
+```{r}
+testing_diabetes_prediction <-  as.numeric(predict(model_class, test_data, type = "response"))
+
+test_data <- cbind(test_data, pred_diab = testing_diabetes_prediction )
+
+head(test_data)
+```
+
+```{r}
+test_data <- test_data %>% 
+  mutate(pred_class = ifelse(pred_diab > 0.5, "pos", "neg"))
+
+head(test_data)
+```
+
+Remember, can use already predefined functions (e.g tidymodels package <https://yardstick.tidymodels.org/articles/metric-types.html>)
+
+```{r}
+library(tidymodels)
+```
+
+As these are categories, we should code them as such
+
+```{r}
+train_data$pred_class <- as.factor(train_data$pred_class )
+test_data$pred_class <- as.factor(test_data$pred_class )
+```
+
+```{r}
+
+# Evaluate performance with metrics
+
+class_metrics <- metric_set(accuracy, precision, recall, sens, specificity)
+
+train_data %>%
+  class_metrics(truth = diabetes, estimate = pred_class )
+
+```
+
+```{r}
+# Evaluate performance with metrics
+
+class_metrics <- metric_set(accuracy, precision, recall, sens, specificity)
+
+test_data %>%
+  class_metrics(truth = diabetes, estimate = pred_class )
+
+```
+
+Similar performance, as expected less in testing - but in all, not very high ( we know all of these performance metrics have 1 as a measure of perfect model)
+
+```{r}
+
+Train <- ggplot(train_data, aes(diabetes, pred_diab, fill = diabetes)) + 
+  geom_boxplot() + 
+  theme_bw()
+
+Test <- ggplot(test_data, aes(diabetes, pred_diab, fill = diabetes)) + 
+  geom_boxplot() + 
+  theme_bw()
+
+
+library(patchwork)
+
+Train + Test
+```
+
+Do you think this plot adds value? Which one? What are we visualizing?
+
+------------------------------------------------------------------------
+
+Key things to understand: - Dataset splitting - Fitting model in training - Evaluating performance of fitted model in both train and test to understand possible overfitting, underfitting issues - Extract insight from modeling and decide next steps
+
+## Include more features
+
+```{r}
+
+head(PimaIndiansDiabetes)
+
+
+```
+
+```{r}
+set.seed(123)
+
+data_split <- initial_split(PimaIndiansDiabetes, prop = 0.7)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+```{r}
+model_class_more <- glm(diabetes ~ age + pressure + triceps + mass + insulin, family = "binomial", data = PimaIndiansDiabetes)
+summary(model_class_more)
+
+```
+
+We have our fitted coefficients! What do they mean? We can have a guide of the association between outcome label and predictors
+
+```{r}
+test_data <-  test_data %>% 
+  mutate(pred_diab = as.numeric(predict(model_class_more, test_data, type = "response")), 
+         pred_class =  as.factor(ifelse(pred_diab > 0.5, "pos", "neg")))
+  
+head(test_data)
+```
+
+```{r}
+train_data <-  train_data %>% 
+  mutate(pred_diab = as.numeric(predict(model_class_more, train_data, type = "response")), 
+         pred_class =  as.factor(ifelse(pred_diab > 0.5, "pos", "neg")))
+  
+head(train_data)
+
+```
+
+```{r}
+class_metrics <- metric_set(accuracy, precision, recall, sens, specificity)
+```
+
+```{r}
+test_data %>%
+  class_metrics(truth = diabetes, estimate = pred_class )
+```
+
+```{r}
+train_data %>%
+  class_metrics(truth = diabetes, estimate = pred_class )
+
+```
+
+Slight increase in performance.
+
+------------------------------------------------------------------------

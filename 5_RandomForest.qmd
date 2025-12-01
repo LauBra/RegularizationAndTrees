@@ -1,0 +1,195 @@
+
+
+## Fitting a classification random forest
+
+
+```{r, message=FALSE}
+# Load libraries
+library(ranger) #random forest learning algorithm package! Although many others too
+library(tidymodels)
+library(mlbench)
+library(tidyverse)
+library(caret) #confusionMatrix function
+
+```
+
+
+```{r}
+# Load the dataset and view
+data("PimaIndiansDiabetes")
+head(PimaIndiansDiabetes)
+
+
+PimaIndiansDiabetes$diabetes <- factor(PimaIndiansDiabetes$diabetes, levels = c("pos", "neg"))  # Convert Outcome to a factor
+
+```
+
+```{r}
+
+# Split into training and testing datasets
+set.seed(123)
+
+data_split <- initial_split(PimaIndiansDiabetes, prop = 0.7, strata = diabetes)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+Now, lets train a basic random forest algorithm. 
+
+```{r}
+
+
+basic_tree <- ranger(diabetes ~ ., data = train_data, seed = 123, mode = "classification") # Need this because random bootstrapping plus random feature splitting!
+basic_tree
+```
+
+
+Class (default threshold 0.5)
+
+```{r}
+# Evaluate the basic model
+pred <- predict(basic_tree, train_data, type = "response")
+head(pred)
+```
+
+
+```{r}
+conf_matrix <- confusionMatrix(pred$predictions, train_data$diabetes)
+print(conf_matrix)
+```
+Look at that performance!!!
+
+Now same thing with test 
+
+```{r}
+# Evaluate the basic model
+pred <- predict(basic_tree, test_data, type = "response")
+
+conf_matrix <- confusionMatrix(pred$predictions, test_data$diabetes)
+print(conf_matrix)
+```
+
+This is a perfect case of complete overfitting! Have to expore hyperparameter tuning! 
+
+## Hyperparameters
+
+We explained that in order to prevent overfitting, decision trees have stopping criteria in the form of hyperparameters. Explore different hyperparamter combinations and see the impact it has on the predictive model created.
+
+First chek out the hyperparameters available. All information is available from the function help <https://cran.r-project.org/web/packages/ranger/ranger.pdf> and go to ranger. We will focus on `mtry` and  `min.node.size`
+
+```{r}
+# Manually tune hyperparameters (example with mtry)
+tuned_tree_depth <- ranger(diabetes ~ ., data = train_data, 
+                          mtry = 2,min.node.size = 50, mode = "classification" )
+```
+
+
+```{r}
+pred_depth_train <- predict(tuned_tree_depth, train_data, type = "response")
+conf_matrix_depth <- confusionMatrix(pred_depth_train$predictions, train_data$diabetes)
+print(conf_matrix_depth)
+```
+
+```{r}
+pred_depth_test <- predict(tuned_tree_depth, test_data, type = "response")
+conf_matrix_depth <- confusionMatrix(pred_depth_test$predictions, test_data$diabetes)
+print(conf_matrix_depth)
+```
+Reduced accuracy in training but didnt improve in testing. Continue trying with other combinations!
+
+
+```{r}
+
+```
+
+## Hyperparameter tuning
+Pipeline level
+
+We are going to tune our parameters directly using the tidymodels framework. In scikit-learn you also have a Pipeline functionality. For more examples recommend <https://juliasilge.com/blog/sf-trees-random-tuning/>. This approach cab be followed with any other learning algorithm!
+
+```{r}
+# Define the Random Forest model with tunable parameters
+
+rf_model <- rand_forest(
+  mtry = tune(),
+  trees = 500,
+  min_n = tune()
+) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+```
+
+To check name of hyperparamters (remember model dependent!) can go here <https://parsnip.tidymodels.org/reference/details_rand_forest_ranger.html>
+
+
+Define the formula in a pipeline fashion
+
+```{r}
+# Define the workflow
+rf_workflow <- workflow() %>%
+  add_model(rf_model) %>%
+  add_formula(diabetes ~ .)
+```
+
+Same as before
+```{r}
+# Create a grid of hyperparameters
+rf_grid <- grid_regular(
+  mtry(range = c(2, 7)),
+  min_n(range = c(2, 10)),
+  levels = 5
+)
+
+head(rf_grid)
+```
+
+
+
+```{r}
+tuning_results <- rf_workflow %>%
+  tune_grid(
+    resamples = bootstraps(train_data, times = 1),  #all data - normally crossv alidation done here  - but will learn later about it!
+    grid = rf_grid,
+    metrics = metric_set(accuracy)
+  )
+
+# Extract the best parameters based on accuracy
+best_params <- select_best(tuning_results, "accuracy")
+
+# Finalise the workflow with the best parameters
+final_rf_workflow <- finalize_workflow(rf_workflow, best_params)
+
+# Fit the final model on the training data
+final_rf_model <- final_rf_workflow %>%
+  fit(data = train_data)
+```
+
+Evaluate in test
+
+```{r}
+# Evaluate the final model on the test data
+final_predictions <- predict(final_rf_model, test_data) %>%
+  bind_cols(test_data)
+
+final_metrics <- final_predictions %>%
+  metrics(truth = diabetes, estimate = .pred_class)
+
+# Display metrics
+print(final_metrics)
+```
+
+Evaluate in train
+
+```{r}
+
+# Evaluate the final model on the test data
+final_predictions <- predict(final_rf_model, train_data) %>%
+  bind_cols(train_data)
+
+final_metrics <- final_predictions %>%
+  metrics(truth = diabetes, estimate = .pred_class)
+
+# Display metrics
+print(final_metrics)
+```
+What benefits do you think pipelines have? 
